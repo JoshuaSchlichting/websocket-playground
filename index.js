@@ -1,5 +1,6 @@
 const canvas = document.getElementById('pongCanvas');
 const context = canvas.getContext('2d');
+const ws = new WebSocket('ws://localhost:80/ws'); // Connect to the Go server
 
 canvas.width = 800;
 canvas.height = 400;
@@ -15,8 +16,8 @@ let ball = {
 };
 
 let userPaddle = {
-    x: 0, // left side of canvas
-    y: (canvas.height - 100) / 2, // -100 the height of paddle
+    x: 0,
+    y: (canvas.height - 100) / 2,
     width: 10,
     height: 100,
     score: 0,
@@ -24,99 +25,63 @@ let userPaddle = {
 };
 
 let aiPaddle = {
-    x: canvas.width - 10, // - width of paddle
-    y: (canvas.height - 100) / 2, // -100 the height of paddle
+    x: canvas.width - 10,
+    y: (canvas.height - 100) / 2,
     width: 10,
     height: 100,
     score: 0,
     color: "WHITE"
 };
 
-function drawRect(x, y, w, h, color) {
-    context.fillStyle = color;
-    context.fillRect(x, y, w, h);
-}
+// WebSocket message handler
+ws.onmessage = function(event) {
+    const gameState = JSON.parse(event.data);
+    // Update local game state with the server's state
+    ball.x = gameState.ball.x;
+    ball.y = gameState.ball.y;
+    userPaddle.y = gameState.userPaddle.y;
+    aiPaddle.y = gameState.aiPaddle.y;
+    // Handle scores and other game state updates here
+};
 
-function drawCircle(x, y, r, color) {
-    context.fillStyle = color;
-    context.beginPath();
-    context.arc(x, y, r, 0, Math.PI*2, false);
-    context.closePath();
-    context.fill();
-}
-
-function drawText(text, x, y, color) {
-    context.fillStyle = color;
-    context.font = "75px fantasy";
-    context.fillText(text, x, y);
+function update() {
+    // Send the current state to the server for processing
+    ws.send(JSON.stringify({ball: ball, userPaddle: userPaddle, aiPaddle: aiPaddle}));
+    // The server will handle collision detection and game state updates
+    // Local updates related to rendering can still be done here if needed
 }
 
 function render() {
     // Clear the canvas
-    drawRect(0, 0, canvas.width, canvas.height, "BLACK");
-    
-    // Draw the user and AI paddles
-    drawRect(userPaddle.x, userPaddle.y, userPaddle.width, userPaddle.height, userPaddle.color);
-    drawRect(aiPaddle.x, aiPaddle.y, aiPaddle.width, aiPaddle.height, aiPaddle.color);
-    
-    // Draw the ball
-    drawCircle(ball.x, ball.y, ball.radius, ball.color);
-    
-    // Draw the scores
-    drawText(userPaddle.score, canvas.width / 4, canvas.height / 5, "WHITE");
-    drawText(aiPaddle.score, 3 * canvas.width / 4, canvas.height / 5, "WHITE");
-}
-function update() {
-    ball.x += ball.velocityX;
-    ball.y += ball.velocityY;
-    
-    // Simple AI to control the aiPaddle (to be improved)
-    aiPaddle.y += ((ball.y - (aiPaddle.y + aiPaddle.height / 2))) * 0.1;
-    
-    // Ball collision with top/bottom walls
-    if(ball.y - ball.radius < 0 || ball.y + ball.radius > canvas.height){
-        ball.velocityY = -ball.velocityY;
-    }
-    
-    // Ball collision with paddles
-    let player = (ball.x < canvas.width / 2) ? userPaddle : aiPaddle;
-    if(collision(ball, player)){
-        // Reverse the ball's direction
-        ball.velocityX = -ball.velocityX;
-    }
-    
-    // Update scores (to be implemented)
-}
+    context.clearRect(0, 0, canvas.width, canvas.height);
 
+    // Render the ball
+    context.beginPath();
+    context.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+    context.fillStyle = ball.color;
+    context.fill();
+    context.closePath();
 
-function collision(b, p) {
-    b.top = b.y - b.radius;
-    b.bottom = b.y + b.radius;
-    b.left = b.x - b.radius;
-    b.right = b.x + b.radius;
-    
-    p.top = p.y;
-    p.bottom = p.y + p.height;
-    p.left = p.x;
-    p.right = p.x + p.width;
-    
-    return b.right > p.left && b.bottom > p.top && b.left < p.right && b.top < p.bottom;
+    // Render the user paddle
+    context.fillStyle = userPaddle.color;
+    context.fillRect(userPaddle.x, userPaddle.y, userPaddle.width, userPaddle.height);
+
+    // Render the AI paddle
+    context.fillStyle = aiPaddle.color;
+    context.fillRect(aiPaddle.x, aiPaddle.y, aiPaddle.width, aiPaddle.height);
 }
 
 function game() {
-    update();
-    render();
+    update(); // Now primarily sends data to the server
+    render(); // Continue to render based on the updated state from the server
 }
 
-// Control the user paddle
 canvas.addEventListener('mousemove', movePaddle);
 
 function movePaddle(evt) {
     let rect = canvas.getBoundingClientRect();
-    
     userPaddle.y = evt.clientY - rect.top - userPaddle.height / 2;
 }
 
-// Loop the game
 let framePerSecond = 50;
 setInterval(game, 1000 / framePerSecond);
