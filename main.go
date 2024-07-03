@@ -9,16 +9,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		// Implement origin checking logic here
-		// For example, allow all origins:
-		return true
-	},
-}
-
 type Paddle struct {
 	Y      float64 `json:"y"`
 	Height float64 `json:"height"`
@@ -37,7 +27,11 @@ type GameState struct {
 	AIPaddle   Paddle `json:"aiPaddle"`
 }
 
-func gameLoop(conn *websocket.Conn, gameState *GameState) {
+// Global variables to manage connected clients and game state
+
+var broadcast = make(chan *GameState) // Broadcast channel
+
+func gameLoop(gameState *GameState) {
 	ticker := time.NewTicker(20 * time.Millisecond)
 	for range ticker.C {
 		// Update game state
@@ -63,53 +57,61 @@ func gameLoop(conn *websocket.Conn, gameState *GameState) {
 			}
 		}
 
-		// Send updated game state to client
-		err := conn.WriteJSON(gameState)
-		if err != nil {
-			log.Printf("Error sending game state: %v", err)
-			break
-		}
 		log.Printf("Ball position: (%f, %f)", gameState.Ball.X, gameState.Ball.Y)
+		broadcast <- gameState
 	}
 }
 
-func serveWs(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		// Implement origin checking logic here
+		// For example, allow all origins:
+		return true
+	},
+}
+
+func handleMessage(_ *websocket.Conn, msg []byte, gameState *GameState) {
+	// Assuming msg is a []byte containing the JSON message
+	var update GameUpdate
+	err := json.Unmarshal(msg, &update)
 	if err != nil {
-		log.Println(err)
+		log.Printf("Error parsing game update: %v", err)
 		return
 	}
-	defer conn.Close()
 
-	localGameState := &GameState{
-		Ball:       Ball{X: 400, Y: 200, VelocityX: 5, VelocityY: 5},
-		UserPaddle: Paddle{Y: 150, Height: 100},
-		AIPaddle:   Paddle{Y: 150, Height: 100},
-	}
-
-	// Start game loop in a goroutine so it runs in parallel
-	go gameLoop(conn, localGameState)
-
-	// Continuously read messages from the client
-	for {
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			log.Printf("Error reading message from client: %v", err)
-			break
-		}
-		handleMessage(conn, msg, localGameState)
-	}
+	gameState.UserPaddle.Y = update.UserPaddle.Y
 }
 
-func main() {
-	// Serve static files from the current directory
-	http.Handle("/", http.FileServer(http.Dir(".")))
+func serveWs(localGameState *GameState) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		defer conn.Close()
 
-	// WebSocket handler
-	http.HandleFunc("/ws", serveWs)
-
-	// Listen on port 80
-	log.Fatal(http.ListenAndServe(":80", nil))
+		go func() {
+			for gameState := range broadcast {
+				err := conn.WriteJSON(gameState)
+				if err != nil {
+					log.Printf("Error writing game state to client: %v", err)
+					return
+				}
+			}
+		}()
+		// Continuously read messages from the client
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				log.Printf("Error reading message from client: %v", err)
+				break
+			}
+			handleMessage(conn, msg, localGameState)
+		}
+	}
 }
 
 type GameUpdate struct {
@@ -140,14 +142,20 @@ type GameUpdate struct {
 	} `json:"aiPaddle"`
 }
 
-func handleMessage(_ *websocket.Conn, msg []byte, gameState *GameState) {
-	// Assuming msg is a []byte containing the JSON message
-	var update GameUpdate
-	err := json.Unmarshal(msg, &update)
-	if err != nil {
-		log.Printf("Error parsing game update: %v", err)
-		return
+func main() {
+	// Serve static files from the current directory
+	http.Handle("/", http.FileServer(http.Dir(".")))
+
+	localGameState := &GameState{
+		Ball:       Ball{X: 400, Y: 200, VelocityX: 5, VelocityY: 5},
+		UserPaddle: Paddle{Y: 150, Height: 100},
+		AIPaddle:   Paddle{Y: 150, Height: 100},
 	}
 
-	gameState.UserPaddle.Y = update.UserPaddle.Y
+	go gameLoop(localGameState)
+
+	// WebSocket handler
+	http.HandleFunc("/ws", serveWs(localGameState))
+	// Listen on port 80
+	log.Fatal(http.ListenAndServe(":80", nil))
 }
