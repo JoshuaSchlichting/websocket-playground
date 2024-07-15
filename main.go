@@ -1,64 +1,82 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
+	"strconv"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
-type Paddle struct {
-	Y      float64 `json:"y"`
-	Height float64 `json:"height"`
+type GPSCoordinates struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
 }
 
-type Ball struct {
-	X         float64 `json:"x"`
-	Y         float64 `json:"y"`
-	VelocityX float64 `json:"velocityX"`
-	VelocityY float64 `json:"velocityY"`
+type City struct {
+	Name               string         `json:"name"`
+	StartingPopulation int            `json:"startingPopulation"`
+	Population         int            `json:"population"`
+	Coordinates        GPSCoordinates `json:"coordinates"`
+	Radius             int            `json:"radius"`
 }
 
+type MissileBattery struct {
+	Name         string         `json:"name"`
+	Coordinates  GPSCoordinates `json:"coordinates"`
+	Range        int            `json:"range"`
+	MissileCount int            `json:"missileCount"`
+}
+
+type Country struct {
+	Name             string           `json:"name"`
+	Cities           []City           `json:"cities"`
+	MissileBatteries []MissileBattery `json:"missileBatteries"`
+}
+type Missile struct {
+	LaunchSite       GPSCoordinates `json:"launchSite"`
+	Destination      GPSCoordinates `json:"destination"`
+	AltitudeMeters   int            `json:"altitude"`
+	SpeedMach        float64        `json:"speedMach"`
+	CountryOfOrigin  Country        `json:"countryOfOrigin"`
+	PositionInFlight GPSCoordinates `json:"positionInFlight"`
+}
+type Player struct {
+	ID            uuid.UUID       `json:"id"`
+	Channel       chan *GameState `json:"-"`
+	WebsocketConn *websocket.Conn `json:"-"`
+	Countries     []Country       `json:"countries"`
+}
 type GameState struct {
-	Ball       Ball   `json:"ball"`
-	UserPaddle Paddle `json:"userPaddle"`
-	AIPaddle   Paddle `json:"aiPaddle"`
+	ID       uuid.UUID       `json:"id"`
+	Missiles []Missile       `json:"missiles"`
+	events   chan *GameState `json:"-"`
+	Players  []Player        `json:"players"`
 }
 
-// Global variables to manage connected clients and game state
+func moveMissiles(gameState *GameState) {
+	for i := range gameState.Missiles {
+		missile := &gameState.Missiles[i]
+		// Move missile towards destination
+		// Calculate the distance between the launch site and the destination
+		distance := calculateDistance(missile.LaunchSite, missile.Destination)
 
-var broadcast = make(chan *GameState) // Broadcast channel
+		// Calculate the time it takes for the missile to reach the destination
+		time := calculateTime(distance, missile.SpeedMach)
 
-func gameLoop(gameState *GameState) {
-	ticker := time.NewTicker(20 * time.Millisecond)
-	for range ticker.C {
-		// Update game state
-		gameState.Ball.X += gameState.Ball.VelocityX
-		gameState.Ball.Y += gameState.Ball.VelocityY
+		// Calculate the velocity vector of the missile
+		velocity := calculateVelocity(missile.LaunchSite, missile.Destination, time)
 
-		// Collision detection (simplified) for top and bottom boundaries
-		if gameState.Ball.Y <= 0 || gameState.Ball.Y >= 400 {
-			gameState.Ball.VelocityY = -gameState.Ball.VelocityY
-		}
+		// Calculate the new position of the missile
+		newPosition := calculateNewPosition(missile.LaunchSite, velocity, time)
 
-		// Collision detection for player paddle
-		if gameState.Ball.X <= 20 { // Assuming the left edge is at X=0 and the paddle width is 20
-			if gameState.Ball.Y >= gameState.UserPaddle.Y && gameState.Ball.Y <= (gameState.UserPaddle.Y+gameState.UserPaddle.Height) {
-				gameState.Ball.VelocityX = -gameState.Ball.VelocityX // Reverse X velocity to bounce
-			}
-		}
-
-		// Collision detection for AI paddle
-		if gameState.Ball.X >= 780 { // Assuming the right edge is at X=800 and the paddle width is 20
-			if gameState.Ball.Y >= gameState.AIPaddle.Y && gameState.Ball.Y <= (gameState.AIPaddle.Y+gameState.AIPaddle.Height) {
-				gameState.Ball.VelocityX = -gameState.Ball.VelocityX // Reverse X velocity to bounce
-			}
-		}
-
-		log.Printf("Ball position: (%f, %f)", gameState.Ball.X, gameState.Ball.Y)
-		broadcast <- gameState
+		// Update the missile's position
+		missile.PositionInFlight = newPosition
 	}
 }
 
@@ -72,90 +90,181 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+func addTypeToJSON(jsonBytes []byte, eventType string) []byte {
+	var data map[string]interface{}
+	err := json.Unmarshal(jsonBytes, &data)
+	if err != nil {
+		slog.Error("Error unmarshalling JSON", "error", err)
+		return jsonBytes
+	}
+	data["type"] = eventType
+	newJSON, err := json.Marshal(data)
+	if err != nil {
+		slog.Error("Error marshalling JSON", "error", err)
+		return jsonBytes
+	}
+	return newJSON
+}
+func subscribeClientToToGameEvents(gameState *GameState, conn *websocket.Conn, ctx context.Context) {
+	slog.Debug("Subscribing client to game events")
+	subscriber := Player{
+		ID:      uuid.New(),
+		Channel: make(chan *GameState, 1000),
+	}
+	gameState.Players = append(gameState.Players, subscriber)
+	go func() {
+		// Broadcast event to the gamestate events channel
+		for event := range subscriber.Channel {
+			slog.Debug("Sending game state to client", "gameState", event)
+			// make sure context is still valid
+			select {
+			case <-ctx.Done():
+				slog.Debug("Context is done, ending client subscription!")
+				// remove subscriber
+				for i, sub := range gameState.Players {
+					if sub.ID == subscriber.ID {
+						gameState.Players = append(gameState.Players[:i], gameState.Players[i+1:]...)
+						break
+					}
+				}
+				return
+			default:
+				// context is still valid
+			}
+			slog.Debug("Sending game state to client", "gameState", event)
+			// create slimmed down version of the game state without channels
+
+			eventJSON, err := json.Marshal(event)
+			if err != nil {
+				slog.Error("Error marshalling game state to JSON", "error", err)
+				continue
+			}
+
+			// Add "type" key-value pair to the JSON
+			eventJSON = addTypeToJSON(eventJSON, "gameStateBroadcast")
+
+			err = conn.WriteJSON(eventJSON)
+			if err != nil {
+				slog.Error("Error writing game state to client", "error", err)
+				return
+			}
+
+			err = conn.WriteJSON(eventJSON)
+			if err != nil {
+				slog.Error("Error writing game state to client", "error", err)
+				return
+			}
+		}
+	}()
+
+}
+
 func handleMessage(_ *websocket.Conn, msg []byte, gameState *GameState) {
 	// Assuming msg is a []byte containing the JSON message
-	var update GameUpdate
+	var update ClientUpdate
 	err := json.Unmarshal(msg, &update)
 	if err != nil {
-		log.Printf("Error parsing game update: %v", err)
+		slog.Debug("Error parsing game update", "error", err)
 		return
 	}
 
-	gameState.UserPaddle.Y = update.UserPaddle.Y
 }
-
 func serveWs(localGameState *GameState) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			log.Println(err)
+			slog.Debug(err.Error())
 			return
 		}
 		defer conn.Close()
-
-		go func() {
-			for gameState := range broadcast {
-				err := conn.WriteJSON(gameState)
-				if err != nil {
-					log.Printf("Error writing game state to client: %v", err)
-					return
-				}
-			}
-		}()
+		slog.Debug("Client connected")
+		ctx := r.Context()
+		go subscribeClientToToGameEvents(localGameState, conn, ctx)
 		// Continuously read messages from the client
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				log.Printf("Error reading message from client: %v", err)
+				if err.Error() == "websocket: close 1001 (going away)" {
+					slog.Debug("Client disconnected")
+					// update context to cancel
+					ctx.Done()
+					break
+				}
+				slog.Debug("Error reading message from client", "error", err)
 				break
 			}
+			slog.Debug("Received message from client", "msg", string(msg))
 			handleMessage(conn, msg, localGameState)
 		}
 	}
 }
 
-type GameUpdate struct {
-	Ball struct {
-		X         float64 `json:"x"`
-		Y         float64 `json:"y"`
-		Radius    float64 `json:"radius"`
-		VelocityX float64 `json:"velocityX"`
-		VelocityY float64 `json:"velocityY"`
-		Speed     float64 `json:"speed"`
-		Color     string  `json:"color"`
-	} `json:"ball"`
-	UserPaddle struct {
-		X      float64 `json:"x"`
-		Y      float64 `json:"y"`
-		Width  float64 `json:"width"`
-		Height float64 `json:"height"`
-		Score  int     `json:"score"`
-		Color  string  `json:"color"`
-	} `json:"userPaddle"`
-	AIPaddle struct {
-		X      float64 `json:"x"`
-		Y      float64 `json:"y"`
-		Width  float64 `json:"width"`
-		Height float64 `json:"height"`
-		Score  int     `json:"score"`
-		Color  string  `json:"color"`
-	} `json:"aiPaddle"`
+type ClientUpdate struct {
+	MissileLaunch struct {
+		Missile Missile `json:"missile"`
+	}
+}
+
+func broadcastGameState(gameState *GameState) {
+	select {
+	case gameState.events <- gameState:
+		// Successfully sent
+		// send next event to each subscriber
+		event := <-gameState.events
+		slog.Debug("Broadcasting game state to clients", "gameState", event)
+		for _, subscriber := range gameState.Players {
+			slog.Debug("Sending game state to subscriber", "subscriberID", subscriber.ID)
+			subscriber.Channel <- event
+		}
+
+		slog.Debug("Game state broadcasted", "gameID", gameState.ID)
+	default:
+		slog.Debug("No receiver ready", "gameID", gameState.ID)
+		// No receiver ready, skip or handle accordingly
+	}
+
+}
+func gameLoop(gameState *GameState, wg *sync.WaitGroup) {
+	slog.Debug("Starting game loop for game ID", "gameID", gameState.ID)
+	defer wg.Done()
+	ticker := time.NewTicker(1 * time.Second)
+	defer slog.Debug("Ending game", "gameID", gameState.ID)
+	for range ticker.C {
+		// Update game state
+		moveMissiles(gameState)
+		slog.Debug("Tick", "gameID", gameState)
+		// Broadcast game state to all connected clients
+		broadcastGameState(gameState)
+
+	}
+}
+
+func serveGame(port int, wg *sync.WaitGroup) {
+	gameState := &GameState{
+		ID:     uuid.New(),
+		events: make(chan *GameState, 1000),
+	}
+	slog.Debug("Starting game", "id", gameState.ID)
+	wg.Add(1)
+	go gameLoop(gameState, wg)
+
+	http.HandleFunc("/ws", serveWs(gameState))
+	http.ListenAndServe(":"+strconv.Itoa(port), nil)
 }
 
 func main() {
+
+	// set slog debug level to DEBUG
+
+	slog.SetLogLoggerLevel(slog.LevelDebug)
 	// Serve static files from the current directory
 	http.Handle("/", http.FileServer(http.Dir(".")))
 
-	localGameState := &GameState{
-		Ball:       Ball{X: 400, Y: 200, VelocityX: 5, VelocityY: 5},
-		UserPaddle: Paddle{Y: 150, Height: 100},
-		AIPaddle:   Paddle{Y: 150, Height: 100},
-	}
+	runningServersWaitGroup := &sync.WaitGroup{}
 
-	go gameLoop(localGameState)
-
-	// WebSocket handler
-	http.HandleFunc("/ws", serveWs(localGameState))
+	slog.Debug("Starting game server")
+	defer slog.Debug("Game server stopped")
 	// Listen on port 80
-	log.Fatal(http.ListenAndServe(":80", nil))
+	serveGame(80, runningServersWaitGroup)
+	runningServersWaitGroup.Wait()
 }

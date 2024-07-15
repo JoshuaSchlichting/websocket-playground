@@ -1,87 +1,96 @@
-const canvas = document.getElementById('pongCanvas');
+const canvas = document.getElementById('gameCanvas');
 const context = canvas.getContext('2d');
 const ws = new WebSocket('ws://localhost:80/ws'); // Connect to the Go server
 
 canvas.width = 800;
 canvas.height = 400;
 
-let ball = {
-    x: canvas.width / 2,
-    y: canvas.height / 2,
-    radius: 10,
-    velocityX: 5,
-    velocityY: 5,
-    speed: 7,
-    color: "WHITE"
-};
 
-let userPaddle = {
+let points = []; // Array to store points
+
+let entity = { // Formerly 'ball'
     x: 0,
-    y: (canvas.height - 100) / 2,
-    width: 10,
-    height: 100,
-    score: 0,
-    color: "WHITE"
+    y: 0,
+    targetIndex: 0, // Index of the next point to move towards
+    speed: 1,
+    color: "RED"
+};
+ws.onmessage = function (event) {
+    // remove leading/trailing junk from base64 message
+    data = event.data.slice(1, -2);
+    let parsedData = JSON.parse(atob(data));
+    console.log("Parsed data:", parsedData); // Enhanced logging
+
+
 };
 
-let aiPaddle = {
-    x: canvas.width - 10,
-    y: (canvas.height - 100) / 2,
-    width: 10,
-    height: 100,
-    score: 0,
-    color: "WHITE"
-};
 
-// WebSocket message handler
-ws.onmessage = function(event) {
-    const gameState = JSON.parse(event.data);
-    // Update local game state with the server's state
-    ball.x = gameState.ball.x;
-    ball.y = gameState.ball.y;
-    userPaddle.y = gameState.userPaddle.y;
-    aiPaddle.y = gameState.aiPaddle.y;
-    // Handle scores and other game state updates here
-};
 
-function update() {
-    // Send the current state to the server for processing
-    ws.send(JSON.stringify({ball: ball, userPaddle: userPaddle, aiPaddle: aiPaddle}));
-    // The server will handle collision detection and game state updates
-    // Local updates related to rendering can still be done here if needed
+function drawMap() {
+    let mapImage = new Image();
+    mapImage.src = 'vector-world-map.svg'; // Path to your SVG map
+    context.drawImage(mapImage, 0, 0, canvas.width, canvas.height);
+}
+
+
+function drawPoints() {
+    points.forEach(point => {
+        context.beginPath();
+        context.arc(point.x, point.y, 5, 0, Math.PI * 2);
+        context.fillStyle = "RED";
+        context.fill();
+        context.closePath();
+    });
+}
+
+function moveEntity() {
+    if (entity.targetIndex < points.length) {
+        let targetPoint = points[entity.targetIndex];
+        let dx = targetPoint.x - entity.x;
+        let dy = targetPoint.y - entity.y;
+        let distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance < entity.speed) {
+            entity.x = targetPoint.x;
+            entity.y = targetPoint.y;
+            entity.targetIndex++;
+        } else {
+            entity.x += (dx / distance) * entity.speed;
+            entity.y += (dy / distance) * entity.speed;
+        }
+    }
 }
 
 function render() {
-    // Clear the canvas
-    context.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Render the ball
+    drawMap();
+    drawPoints();
+    // Render the entity
     context.beginPath();
-    context.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
-    context.fillStyle = ball.color;
+    context.arc(entity.x, entity.y, 5, 0, Math.PI * 2);
+    context.fillStyle = entity.color;
     context.fill();
     context.closePath();
-
-    // Render the user paddle
-    context.fillStyle = userPaddle.color;
-    context.fillRect(userPaddle.x, userPaddle.y, userPaddle.width, userPaddle.height);
-
-    // Render the AI paddle
-    context.fillStyle = aiPaddle.color;
-    context.fillRect(aiPaddle.x, aiPaddle.y, aiPaddle.width, aiPaddle.height);
 }
 
 function game() {
-    update(); // Now primarily sends data to the server
-    render(); // Continue to render based on the updated state from the server
+    moveEntity();
+    render();
 }
 
-canvas.addEventListener('mousemove', movePaddle);
-
-function movePaddle(evt) {
+canvas.addEventListener('click', function (evt) {
     let rect = canvas.getBoundingClientRect();
-    userPaddle.y = evt.clientY - rect.top - userPaddle.height / 2;
-}
+    let x = evt.clientX - rect.left;
+    let y = evt.clientY - rect.top;
+    points.push({ x: x, y: y });
+    if (points.length === 1) {
+        // Place the entity at the first point
+        entity.x = x;
+        entity.y = y;
+    } else {
+        // Start moving the entity towards the new point
+        entity.targetIndex = points.length - 1;
+    }
+});
 
 let framePerSecond = 50;
 setInterval(game, 1000 / framePerSecond);
