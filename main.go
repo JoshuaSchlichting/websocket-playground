@@ -48,6 +48,7 @@ type Missile struct {
 	SpeedMach        float64        `json:"speedMach"`
 	CountryOfOrigin  Country        `json:"countryOfOrigin"`
 	PositionInFlight GPSCoordinates `json:"positionInFlight"`
+	Active           bool           `json:"active"`
 }
 
 type Player struct {
@@ -92,6 +93,7 @@ func (p *Player) LaunchMissile(target GPSCoordinates, silo *MissileBattery) erro
 		AltitudeMeters:  1000,
 		SpeedMach:       2.5,
 		CountryOfOrigin: p.Countries[0],
+		Active:          true,
 	}
 	p.gameInstance.Missiles = append(p.gameInstance.Missiles, missile)
 	slog.Info("Missile launched", "missile", missile)
@@ -108,6 +110,9 @@ type GameState struct {
 func moveMissiles(gameState *GameState) {
 	for i := range gameState.Missiles {
 		missile := &gameState.Missiles[i]
+		if !missile.Active {
+			continue
+		}
 		// Assuming a simple parabolic trajectory for demonstration purposes.
 		// In reality, missile trajectories are more complex and depend on various factors.
 
@@ -139,11 +144,13 @@ func moveMissiles(gameState *GameState) {
 		missile.AltitudeMeters = int(currentHeight)
 
 		// Check if the rocket has reached its destination (or close enough).
-		if math.Abs(missile.PositionInFlight.Latitude-missile.Destination.Latitude) < 0.01 &&
-			math.Abs(missile.PositionInFlight.Longitude-missile.Destination.Longitude) < 0.01 {
-			fmt.Println("Rocket has reached its destination.")
+		if math.Abs(missile.PositionInFlight.Latitude-missile.Destination.Latitude) < 0.05 &&
+			math.Abs(missile.PositionInFlight.Longitude-missile.Destination.Longitude) < 0.2 {
+			missile.Active = false
+			slog.Info("SPLASH! Missile reached its destination.", "origin", missile.CountryOfOrigin.Name, "origin", missile.LaunchSite, "target", missile.Destination)
+		} else {
+			slog.Debug("Missile moved", "origin", missile.CountryOfOrigin.Name, "position", missile.PositionInFlight, "target", missile.Destination)
 		}
-		slog.Debug("Missile moved", "origin", missile.CountryOfOrigin.Name, "position", missile.PositionInFlight, "target", missile.Destination)
 	}
 }
 
