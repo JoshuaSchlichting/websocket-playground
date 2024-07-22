@@ -304,7 +304,6 @@ func gameLoop(gameState *GameState, wg *sync.WaitGroup) {
 								newPopulation = 0
 							}
 							slog.Info("City hit by missile", "city", city.Name, "beforeStrikePopulation", originalPopulation, "afterStrikePop", newPopulation)
-
 						}
 					}
 				}
