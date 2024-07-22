@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"golang.org/x/exp/rand"
 )
 
 type GPSCoordinates struct {
@@ -29,24 +30,23 @@ type City struct {
 }
 
 type MissileBattery struct {
-	Name         string         `json:"name"`
 	Coordinates  GPSCoordinates `json:"coordinates"`
 	Range        int            `json:"range"`
 	MissileCount int            `json:"missileCount"`
 }
 
 type Country struct {
-	Name             string           `json:"name"`
-	Cities           []City           `json:"cities"`
-	MissileBatteries []MissileBattery `json:"missileBatteries"`
+	Name             string            `json:"name"`
+	Cities           map[string]*City  `json:"cities"`
+	MissileBatteries []*MissileBattery `json:"missileBatteries"`
 }
 
 type Missile struct {
 	LaunchSite       GPSCoordinates `json:"launchSite"`
-	Destination      GPSCoordinates `json:"destination"`
+	Destination      *City          `json:"destination"`
 	AltitudeMeters   int            `json:"altitude"`
 	SpeedMach        float64        `json:"speedMach"`
-	CountryOfOrigin  Country        `json:"countryOfOrigin"`
+	CountryOfOrigin  string         `json:"countryOfOrigin"`
 	PositionInFlight GPSCoordinates `json:"positionInFlight"`
 	Active           bool           `json:"active"`
 }
@@ -55,36 +55,24 @@ type Player struct {
 	ID            uuid.UUID       `json:"id"`
 	Channel       chan *GameState `json:"-"`
 	WebsocketConn *websocket.Conn `json:"-"`
-	Countries     []Country       `json:"countries"`
+	Country       string          `json:"country"`
 	gameInstance  *GameState      `json:"-"`
 }
 
-func NewPlayer(gameState *GameState, websocket *websocket.Conn, countries []Country) *Player {
+func NewPlayer(gameState *GameState, websocket *websocket.Conn, country string) *Player {
+
 	return &Player{
 		ID:            uuid.New(),
 		Channel:       make(chan *GameState, 1000),
-		Countries:     countries,
+		Country:       country,
 		WebsocketConn: websocket,
 		gameInstance:  gameState,
 	}
 }
 
-func (p *Player) AddCountry(country Country) {
-	p.Countries = append(p.Countries, country)
-}
-
-func (p *Player) RemoveCountry(country Country) {
-	for i, c := range p.Countries {
-		if c.Name == country.Name {
-			p.Countries = append(p.Countries[:i], p.Countries[i+1:]...)
-			break
-		}
-	}
-}
-
-func (p *Player) LaunchMissile(target GPSCoordinates, silo *MissileBattery) error {
+func (p *Player) LaunchMissile(target *City, silo *MissileBattery) error {
 	if silo.MissileCount == 0 {
-		return fmt.Errorf("0 balance on missiles in silo '%s'", silo.Name)
+		return fmt.Errorf("0 balance on missiles in silo '%v'", silo.Coordinates)
 	}
 	silo.MissileCount--
 	missile := Missile{
@@ -92,24 +80,25 @@ func (p *Player) LaunchMissile(target GPSCoordinates, silo *MissileBattery) erro
 		Destination:     target,
 		AltitudeMeters:  1000,
 		SpeedMach:       2.5,
-		CountryOfOrigin: p.Countries[0],
+		CountryOfOrigin: p.Country,
 		Active:          true,
 	}
-	p.gameInstance.Missiles = append(p.gameInstance.Missiles, missile)
-	slog.Info("Missile launched", "missile", missile)
+	p.gameInstance.Missiles = append(p.gameInstance.Missiles, &missile)
+	slog.Info("Missile launched", "missile", missile, "missilesRemaining", silo.MissileCount)
 	return nil
 }
 
 type GameState struct {
-	ID       uuid.UUID       `json:"id"`
-	Missiles []Missile       `json:"missiles"`
-	events   chan *GameState `json:"-"`
-	Players  []*Player       `json:"players"`
+	ID        uuid.UUID           `json:"id"`
+	Missiles  []*Missile          `json:"missiles"`
+	events    chan *GameState     `json:"-"`
+	Countries map[string]*Country `json:"countries"`
+	Players   []*Player           `json:"players"`
 }
 
-func moveMissiles(gameState *GameState) {
+func moveMissiles(gameState *GameState) (destinationsHit []*City) {
 	for i := range gameState.Missiles {
-		missile := &gameState.Missiles[i]
+		missile := gameState.Missiles[i]
 		if !missile.Active {
 			continue
 		}
@@ -117,8 +106,8 @@ func moveMissiles(gameState *GameState) {
 		// In reality, missile trajectories are more complex and depend on various factors.
 
 		// Calculate the direction vector from current position to destination.
-		directionLat := missile.Destination.Latitude - missile.PositionInFlight.Latitude
-		directionLon := missile.Destination.Longitude - missile.PositionInFlight.Longitude
+		directionLat := missile.Destination.Coordinates.Latitude - missile.PositionInFlight.Latitude
+		directionLon := missile.Destination.Coordinates.Longitude - missile.PositionInFlight.Longitude
 
 		// Normalize the direction vector (so its length is 1).
 		distance := math.Sqrt(directionLat*directionLat + directionLon*directionLon)
@@ -144,14 +133,14 @@ func moveMissiles(gameState *GameState) {
 		missile.AltitudeMeters = int(currentHeight)
 
 		// Check if the rocket has reached its destination (or close enough).
-		if math.Abs(missile.PositionInFlight.Latitude-missile.Destination.Latitude) < 0.05 &&
-			math.Abs(missile.PositionInFlight.Longitude-missile.Destination.Longitude) < 0.2 {
+		if math.Abs(missile.PositionInFlight.Latitude-missile.Destination.Coordinates.Latitude) < 0.05 &&
+			math.Abs(missile.PositionInFlight.Longitude-missile.Destination.Coordinates.Longitude) < 0.2 {
 			missile.Active = false
-			slog.Info("SPLASH! Missile reached its destination.", "origin", missile.CountryOfOrigin.Name, "origin", missile.LaunchSite, "target", missile.Destination)
-		} else {
-			slog.Debug("Missile moved", "origin", missile.CountryOfOrigin.Name, "position", missile.PositionInFlight, "target", missile.Destination)
+			slog.Info("SPLASH! Missile reached its destination.", "origin", missile.CountryOfOrigin, "origin", missile.LaunchSite, "target", missile.Destination)
+			destinationsHit = append(destinationsHit, missile.Destination)
 		}
 	}
+	return destinationsHit
 }
 
 func addTypeToJSON(jsonBytes []byte, eventType string) []byte {
@@ -246,39 +235,9 @@ func serveWs(gameState *GameState) http.HandlerFunc {
 		defer conn.Close()
 		slog.Debug("Client connected")
 		ctx := r.Context()
-		newPlayer := NewPlayer(gameState, conn, []Country{
-			{
-				Name: "Test",
-				Cities: []City{
-					{
-						Name:               "Test",
-						StartingPopulation: 1000,
-						Population:         1000,
-						Coordinates: GPSCoordinates{
-							Latitude:  0,
-							Longitude: 0,
-						},
-						Radius: 100,
-					},
-				},
-				MissileBatteries: []MissileBattery{
-					{
-						Name:         "Test",
-						Coordinates:  GPSCoordinates{Latitude: 0, Longitude: 0},
-						Range:        1000,
-						MissileCount: 10,
-					},
-				},
-			},
-		})
-
+		newPlayer := NewPlayer(gameState, conn, "Russia")
 		go newPlayer.subscribeClientToToGameEvents(ctx)
-		newPlayer.LaunchMissile(GPSCoordinates{Latitude: 20.29136348359818, Longitude: -78.61084102637136}, &MissileBattery{
-			Name:         "Test",
-			Coordinates:  GPSCoordinates{Latitude: 40.716690215399325, Longitude: -74.20734855505961},
-			Range:        1000,
-			MissileCount: 10,
-		})
+		newPlayer.LaunchMissile(gameState.Countries["Russia"].Cities["Moscow"], gameState.Countries["USA"].MissileBatteries[0])
 		// Continuously read messages from the client
 		for {
 			_, msg, err := conn.ReadMessage()
@@ -320,8 +279,8 @@ func broadcastGameState(gameState *GameState) {
 		slog.Debug("No receiver ready", "gameID", gameState.ID)
 		// No receiver ready, skip or handle accordingly
 	}
-
 }
+
 func gameLoop(gameState *GameState, wg *sync.WaitGroup) {
 	slog.Debug("Starting game loop for game ID", "gameID", gameState.ID)
 	defer wg.Done()
@@ -329,7 +288,28 @@ func gameLoop(gameState *GameState, wg *sync.WaitGroup) {
 	defer slog.Debug("Ending game", "gameID", gameState.ID)
 	for range ticker.C {
 		// Update game state
-		moveMissiles(gameState)
+		destinationsHit := moveMissiles(gameState)
+		// loop through all players, and all their cities, and update their cities population
+		if len(destinationsHit) > 0 {
+			for _, country := range gameState.Countries {
+				for _, city := range country.Cities {
+					for _, hitCity := range destinationsHit {
+						if city.Name == hitCity.Name {
+							newPopulation := city.Population - rand.Intn(4500000)
+							originalPopulation := city.Population
+							if newPopulation > 0 {
+								city.Population = newPopulation
+							} else {
+								city.Population = 0
+								newPopulation = 0
+							}
+							slog.Info("City hit by missile", "city", city.Name, "beforeStrikePopulation", originalPopulation, "afterStrikePop", newPopulation)
+
+						}
+					}
+				}
+			}
+		}
 		// slog.Debug("Tick", "gameID", gameState)
 		// Broadcast game state to all connected clients
 		broadcastGameState(gameState)
@@ -338,9 +318,20 @@ func gameLoop(gameState *GameState, wg *sync.WaitGroup) {
 }
 
 func serveGame(port int, wg *sync.WaitGroup) {
+	// make a copy of countries
+	countryList := map[string]*Country{}
+	for name, country := range countries {
+		countryList[name] = &Country{
+			Name:             country.Name,
+			Cities:           country.Cities,
+			MissileBatteries: country.MissileBatteries,
+		}
+	}
+
 	gameState := &GameState{
-		ID:     uuid.New(),
-		events: make(chan *GameState, 1000),
+		ID:        uuid.New(),
+		events:    make(chan *GameState, 1000),
+		Countries: countryList,
 	}
 	slog.Debug("Starting game", "id", gameState.ID)
 	wg.Add(1)

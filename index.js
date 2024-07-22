@@ -19,8 +19,7 @@ ws.onmessage = function (event) {
     // remove leading/trailing junk from base64 message
     data = event.data.slice(1, -2);
     let parsedData = JSON.parse(atob(data));
-    console.log("Parsed data:", parsedData); // Enhanced logging
-
+    console.log(parsedData);
 
 };
 
@@ -94,3 +93,22 @@ canvas.addEventListener('click', function (evt) {
 
 let framePerSecond = 50;
 setInterval(game, 1000 / framePerSecond);
+
+canvas.addEventListener('click', function (evt) {
+    let rect = canvas.getBoundingClientRect();
+    let x = evt.clientX - rect.left;
+    let y = evt.clientY - rect.top;
+    let longitude = (x / canvas.width) * 360 - 180;
+    let latitude = ((canvas.height - y) / canvas.height) * 180 - 90;
+    console.log("Longitude:", longitude, "Latitude:", latitude);
+    points.push({ x: x, y: y });
+    if (points.length === 1) {
+        // Place the entity at the first point
+        entity.x = x;
+        entity.y = y;
+    } else {
+        // Start moving the entity towards the new point
+        entity.targetIndex = points.length - 1;
+    }
+    
+});
