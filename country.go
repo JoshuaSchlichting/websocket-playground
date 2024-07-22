@@ -35,8 +35,8 @@ var countries = map[string]Country{
 			},
 			{
 				Coordinates: GPSCoordinates{
-					Latitude:  34.0522,
-					Longitude: -118.2437,
+					Latitude:  42.0522,
+					Longitude: -92.2437,
 				},
 				MissileCount: 5,
 			},

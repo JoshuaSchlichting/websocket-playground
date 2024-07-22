@@ -50,6 +50,16 @@ function drawPoints() {
             context.closePath();
         }
     }
+    let missiles = gameState['missiles'];
+    for (let missile of missiles) {
+        let x = (missile.positionInFlight.longitude + 180) / 360 * canvas.width;
+        let y = canvas.height - (missile.positionInFlight.latitude + 90) / 180 * canvas.height;
+        context.beginPath();
+        context.arc(x, y, 5, 0, Math.PI * 2);
+        context.fillStyle = "RED";
+        context.fill();
+        context.closePath();
+    }
 }
 
 function moveEntity() {
