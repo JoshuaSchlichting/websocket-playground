@@ -21,7 +21,15 @@ ws.onmessage = function (event) {
     let parsedData = JSON.parse(atob(data));
     if (parsedData['type'] === 'gameStateBroadcast') {
         gameState = parsedData;
+
+        // add gameState['messages'] to the gameMessages textarea
+        let gameMessages = document.getElementById('gameMessages');
+        let messages = gameState['messages'];
+        if (messages) {
+            gameMessages.value = messages.join('\n');
+        }
     }
+
 };
 
 

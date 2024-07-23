@@ -84,6 +84,7 @@ func (p *Player) LaunchMissile(target *City, silo *MissileBattery) error {
 		Active:          true,
 	}
 	p.gameInstance.Missiles = append(p.gameInstance.Missiles, &missile)
+	p.gameInstance.Messages = append(p.gameInstance.Messages, fmt.Sprintf("%s - Missile launched from %v to %v by player %s", time.Now().UTC().Format(time.RFC3339), silo.Coordinates, target.Coordinates, p.ID))
 	slog.Info("Missile launched", "missile", missile, "missilesRemaining", silo.MissileCount)
 	return nil
 }
@@ -94,6 +95,7 @@ type GameState struct {
 	events    chan *GameState     `json:"-"`
 	Countries map[string]*Country `json:"countries"`
 	Players   []*Player           `json:"players"`
+	Messages  []string            `json:"messages"`
 }
 
 func moveMissiles(gameState *GameState) (destinationsHit []*City) {
@@ -303,7 +305,8 @@ func gameLoop(gameState *GameState, wg *sync.WaitGroup) {
 								city.Population = 0
 								newPopulation = 0
 							}
-							slog.Info("City hit by missile", "city", city.Name, "beforeStrikePopulation", originalPopulation, "afterStrikePop", newPopulation)
+							slog.Debug("City hit by missile", "city", city.Name, "beforeStrikePopulation", originalPopulation, "afterStrikePop", newPopulation)
+							gameState.Messages = append(gameState.Messages, fmt.Sprintf("%s - City %v hit by missile, population reduced from %v to %v", time.Now().UTC().Format(time.RFC3339), city.Name, originalPopulation, newPopulation))
 						}
 					}
 				}
